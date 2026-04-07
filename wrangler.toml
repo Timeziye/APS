@@ -1,6 +1,6 @@
 name = "aps-site"
 main = "worker.js"
-compatibility_date = "2026-04-07"
+compatibility_date = "2025-09-12"
 
 [[r2_buckets]]
 binding = "MY_BUCKET"          # 代码里用到的名字

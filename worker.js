@@ -8,7 +8,7 @@ var worker_default = {
       path = "/index.html";
     }
 
-    // 去掉开头的 "/" 并加上 Study-Note/ 前缀
+    // 去掉开头的 "/" 并加上 APS/ 前缀
     const key = "APS/" + (path.startsWith("/") ? path.slice(1) : path);
 
     try {
