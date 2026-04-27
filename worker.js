@@ -29,6 +29,30 @@ function contentTypeFor(key) {
   return "application/octet-stream";
 }
 
+function spreadsheetLinkScript() {
+  return `<script>
+(() => {
+  const links = document.querySelectorAll('a[href]');
+  for (const link of links) {
+    const href = link.getAttribute('href') || '';
+    if (/\\.(xlsx|xls|xlsm|csv)([?#].*)?$/i.test(href)) {
+      link.target = '_blank';
+      link.rel = 'noopener';
+    }
+  }
+})();
+</script>`;
+}
+
+function injectSpreadsheetLinkScript(html) {
+  const script = spreadsheetLinkScript();
+  if (html.includes(script)) return html;
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, `${script}</body>`);
+  }
+  return `${html}${script}`;
+}
+
 function spreadsheetViewer(path) {
   const fileName = escapeHtml(decodeURIComponent(path.split("/").pop() || "spreadsheet"));
 
@@ -49,6 +73,8 @@ function spreadsheetViewer(path) {
     #tabs button.active { border-color: #1769e0; background: #eaf2ff; color: #0f55bb; }
     #status { padding: 18px 16px; color: #5b6576; }
     #sheet { margin: 16px; overflow: auto; border: 1px solid #d8deea; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgba(12, 20, 33, .05); }
+    #more { display: none; margin: 0 16px 16px; }
+    #more button { border: 1px solid #c8d1e1; border-radius: 6px; background: #fff; color: #263143; padding: 8px 12px; font-size: 13px; cursor: pointer; }
     table { border-collapse: collapse; min-width: 100%; font-size: 13px; background: #fff; }
     th, td { max-width: 420px; min-width: 60px; border: 1px solid #e1e6ef; padding: 7px 9px; vertical-align: top; white-space: pre-wrap; word-break: break-word; }
     th { position: sticky; top: 0; z-index: 1; background: #f0f4fa; font-weight: 650; }
@@ -64,18 +90,32 @@ function spreadsheetViewer(path) {
   <main>
     <div id="status">正在加载 Excel 文件...</div>
     <div id="sheet" hidden></div>
+    <div id="more"><button type="button">显示更多行</button></div>
   </main>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
+    const INITIAL_ROW_LIMIT = 300;
+    const ROW_STEP = 300;
+    const COLUMN_LIMIT = 80;
     const statusEl = document.getElementById('status');
     const sheetEl = document.getElementById('sheet');
     const tabsEl = document.getElementById('tabs');
+    const moreEl = document.getElementById('more');
+    const moreButton = moreEl.querySelector('button');
+    let activeWorkbook = null;
+    let activeSheetName = '';
+    let visibleRows = INITIAL_ROW_LIMIT;
     document.getElementById('download').href = window.location.pathname + '?download=1';
 
     function setStatus(message) {
       statusEl.textContent = message;
       statusEl.hidden = false;
       sheetEl.hidden = true;
+      moreEl.style.display = 'none';
+    }
+
+    function nextFrame() {
+      return new Promise((resolve) => requestAnimationFrame(resolve));
     }
 
     function normalizeRgb(value) {
@@ -160,7 +200,11 @@ function spreadsheetViewer(path) {
       return { starts, covered };
     }
 
-    function renderSheet(workbook, sheetName) {
+    async function renderSheet(workbook, sheetName, options = {}) {
+      activeWorkbook = workbook;
+      activeSheetName = sheetName;
+      if (!options.keepRows) visibleRows = INITIAL_ROW_LIMIT;
+
       for (const button of tabsEl.querySelectorAll('button')) {
         button.classList.toggle('active', button.dataset.sheet === sheetName);
       }
@@ -173,14 +217,18 @@ function spreadsheetViewer(path) {
 
       const range = XLSX.utils.decode_range(sheet['!ref']);
       const mergeMap = buildMergeMap(sheet);
+      const endRow = Math.min(range.e.r, range.s.r + visibleRows - 1);
+      const endColumn = Math.min(range.e.c, range.s.c + COLUMN_LIMIT - 1);
       const table = document.createElement('table');
       const fragment = document.createDocumentFragment();
       let hasVisibleValue = false;
 
-      for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+      await nextFrame();
+
+      for (let rowIndex = range.s.r; rowIndex <= endRow; rowIndex += 1) {
         const tr = document.createElement('tr');
 
-        for (let columnIndex = range.s.c; columnIndex <= range.e.c; columnIndex += 1) {
+        for (let columnIndex = range.s.c; columnIndex <= endColumn; columnIndex += 1) {
           const key = rowIndex + ':' + columnIndex;
           if (mergeMap.covered.has(key)) continue;
 
@@ -215,6 +263,12 @@ function spreadsheetViewer(path) {
       sheetEl.replaceChildren(table);
       statusEl.hidden = true;
       sheetEl.hidden = false;
+
+      const hasMoreRows = endRow < range.e.r;
+      moreEl.style.display = hasMoreRows ? 'block' : 'none';
+      if (hasMoreRows) {
+        moreButton.textContent = '显示更多行';
+      }
     }
 
     async function loadWorkbook() {
@@ -237,11 +291,23 @@ function spreadsheetViewer(path) {
         button.type = 'button';
         button.dataset.sheet = sheetName;
         button.textContent = sheetName;
-        button.addEventListener('click', () => renderSheet(workbook, sheetName));
+        button.addEventListener('click', () => {
+          renderSheet(workbook, sheetName).catch((error) => {
+            setStatus('Excel 文件渲染失败：' + error.message);
+          });
+        });
         return button;
       }));
-      renderSheet(workbook, workbook.SheetNames[0]);
+      await renderSheet(workbook, workbook.SheetNames[0]);
     }
+
+    moreButton.addEventListener('click', () => {
+      if (!activeWorkbook || !activeSheetName) return;
+      visibleRows += ROW_STEP;
+      renderSheet(activeWorkbook, activeSheetName, { keepRows: true }).catch((error) => {
+        setStatus('Excel 文件渲染失败：' + error.message);
+      });
+    });
 
     loadWorkbook().catch((error) => {
       setStatus('Excel 文件加载失败：' + error.message);
@@ -292,6 +358,15 @@ var worker_default = {
 
       if (spreadsheetExtension && url.searchParams.has("download")) {
         extraHeaders["Content-Disposition"] = `attachment; filename="${path.split("/").pop() || "spreadsheet"}"`;
+      }
+
+      if (key.toLowerCase().endsWith(".html")) {
+        return new Response(injectSpreadsheetLinkScript(await object.text()), {
+          headers: {
+            "content-type": contentTypeFor(key),
+            ...extraHeaders,
+          },
+        });
       }
 
       return new Response(object.body, {
