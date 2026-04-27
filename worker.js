@@ -65,6 +65,7 @@ function spreadsheetViewer(path) {
     <div id="status">正在加载 Excel 文件...</div>
     <div id="sheet" hidden></div>
   </main>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
     const statusEl = document.getElementById('status');
@@ -88,14 +89,14 @@ function spreadsheetViewer(path) {
 
     function colorFrom(styleColor) {
       if (!styleColor) return '';
+      if (styleColor.argb) return normalizeRgb(styleColor.argb);
       if (styleColor.rgb) return normalizeRgb(styleColor.rgb);
-      if (styleColor.indexed === 64) return '';
       return '';
     }
 
-    function fillColorFrom(style) {
-      if (!style || !style.fill) return '';
-      return colorFrom(style.fill.fgColor) || colorFrom(style.fill.bgColor);
+    function fillColorFrom(fill) {
+      if (!fill) return '';
+      return colorFrom(fill.fgColor) || colorFrom(fill.bgColor);
     }
 
     function applyAlignment(element, alignment) {
@@ -110,6 +111,7 @@ function spreadsheetViewer(path) {
       };
       const verticalMap = {
         top: 'top',
+        middle: 'middle',
         center: 'middle',
         bottom: 'bottom',
       };
@@ -123,9 +125,19 @@ function spreadsheetViewer(path) {
       }
     }
 
-    function applyCellStyle(element, cell) {
+    function applyExcelJsCellStyle(element, cell) {
+      const fillColor = fillColorFrom(cell.fill);
+      const fontColor = colorFrom(cell.font && cell.font.color);
+
+      if (fillColor) element.style.backgroundColor = fillColor;
+      if (fontColor) element.style.color = fontColor;
+      if (cell.font && cell.font.bold) element.style.fontWeight = '700';
+      applyAlignment(element, cell.alignment);
+    }
+
+    function applySheetJsCellStyle(element, cell) {
       const style = cell && cell.s ? cell.s : {};
-      const fillColor = fillColorFrom(style);
+      const fillColor = fillColorFrom(style.fill);
       const fontColor = colorFrom(style.font && style.font.color);
 
       if (fillColor) element.style.backgroundColor = fillColor;
@@ -134,14 +146,68 @@ function spreadsheetViewer(path) {
       applyAlignment(element, style.alignment);
     }
 
-    function formattedValue(cell) {
+    function textFromExcelJsCell(cell) {
+      if (!cell) return '';
+      const value = cell.value;
+      if (value == null) return '';
+      if (cell.text) return String(cell.text);
+      if (value instanceof Date) return value.toLocaleString();
+      if (typeof value !== 'object') return String(value);
+      if (Array.isArray(value.richText)) return value.richText.map((part) => part.text || '').join('');
+      if (value.text != null) return String(value.text);
+      if (value.result != null) return String(value.result);
+      if (value.formula != null) return String(value.formula);
+      if (value.error != null) return String(value.error);
+      return String(value);
+    }
+
+    function textFromSheetJsCell(cell) {
       if (!cell) return '';
       if (cell.w != null) return String(cell.w);
       if (cell.v == null) return '';
       return String(cell.v);
     }
 
-    function buildMergeMap(sheet) {
+    function columnIndexFromLetters(letters) {
+      return letters.toUpperCase().split('').reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0);
+    }
+
+    function decodeA1Cell(address) {
+      const match = String(address).match(/^\\$?([A-Z]+)\\$?(\\d+)$/i);
+      if (!match) return null;
+      return { row: Number(match[2]), col: columnIndexFromLetters(match[1]) };
+    }
+
+    function decodeA1Range(range) {
+      const parts = String(range).split(':');
+      const start = decodeA1Cell(parts[0]);
+      const end = decodeA1Cell(parts[1] || parts[0]);
+      if (!start || !end) return null;
+      return { start, end };
+    }
+
+    function buildExcelJsMergeMap(worksheet) {
+      const starts = new Map();
+      const covered = new Set();
+
+      for (const mergeRange of worksheet.model.merges || []) {
+        const decoded = decodeA1Range(mergeRange);
+        if (!decoded) continue;
+        const rowSpan = decoded.end.row - decoded.start.row + 1;
+        const colSpan = decoded.end.col - decoded.start.col + 1;
+        starts.set(decoded.start.row + ':' + decoded.start.col, { rowSpan, colSpan });
+
+        for (let row = decoded.start.row; row <= decoded.end.row; row += 1) {
+          for (let col = decoded.start.col; col <= decoded.end.col; col += 1) {
+            if (row !== decoded.start.row || col !== decoded.start.col) covered.add(row + ':' + col);
+          }
+        }
+      }
+
+      return { starts, covered };
+    }
+
+    function buildSheetJsMergeMap(sheet) {
       const starts = new Map();
       const covered = new Set();
 
@@ -160,47 +226,45 @@ function spreadsheetViewer(path) {
       return { starts, covered };
     }
 
-    function renderSheet(workbook, sheetName) {
-      for (const button of tabsEl.querySelectorAll('button')) {
-        button.classList.toggle('active', button.dataset.sheet === sheetName);
+    function appendCell(row, cellElement, text, merge) {
+      cellElement.textContent = text;
+      if (!text) cellElement.classList.add('empty');
+
+      if (merge) {
+        if (merge.rowSpan > 1) cellElement.rowSpan = merge.rowSpan;
+        if (merge.colSpan > 1) cellElement.colSpan = merge.colSpan;
       }
 
-      const sheet = workbook.Sheets[sheetName];
-      if (!sheet || !sheet['!ref']) {
+      row.appendChild(cellElement);
+    }
+
+    function renderExcelJsSheet(workbook, sheetName) {
+      const worksheet = workbook.getWorksheet(sheetName);
+      if (!worksheet || !worksheet.rowCount || !worksheet.columnCount) {
         setStatus('这个工作表没有可显示的数据。');
         return;
       }
 
-      const range = XLSX.utils.decode_range(sheet['!ref']);
-      const mergeMap = buildMergeMap(sheet);
+      const mergeMap = buildExcelJsMergeMap(worksheet);
       const table = document.createElement('table');
       const fragment = document.createDocumentFragment();
       let hasVisibleValue = false;
 
-      for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+      for (let rowIndex = 1; rowIndex <= worksheet.rowCount; rowIndex += 1) {
         const tr = document.createElement('tr');
 
-        for (let columnIndex = range.s.c; columnIndex <= range.e.c; columnIndex += 1) {
+        for (let columnIndex = 1; columnIndex <= worksheet.columnCount; columnIndex += 1) {
           const key = rowIndex + ':' + columnIndex;
           if (mergeMap.covered.has(key)) continue;
 
-          const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
-          const workbookCell = sheet[address];
-          const cell = document.createElement(rowIndex === range.s.r ? 'th' : 'td');
-          const text = formattedValue(workbookCell);
+          const workbookCell = worksheet.getCell(rowIndex, columnIndex);
+          const cell = document.createElement(rowIndex === 1 ? 'th' : 'td');
+          const text = textFromExcelJsCell(workbookCell);
           const merge = mergeMap.starts.get(key);
 
-          cell.textContent = text;
-          if (!text) cell.classList.add('empty');
-
-          if (merge) {
-            if (merge.rowSpan > 1) cell.rowSpan = merge.rowSpan;
-            if (merge.colSpan > 1) cell.colSpan = merge.colSpan;
-          }
-
-          applyCellStyle(cell, workbookCell);
+          applyExcelJsCellStyle(cell, workbookCell);
+          appendCell(tr, cell, text, merge);
           if (text) hasVisibleValue = true;
-          tr.appendChild(cell);
         }
 
         fragment.appendChild(tr);
@@ -217,30 +281,113 @@ function spreadsheetViewer(path) {
       sheetEl.hidden = false;
     }
 
+    function renderSheetJsSheet(workbook, sheetName) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet || !sheet['!ref']) {
+        setStatus('这个工作表没有可显示的数据。');
+        return;
+      }
+
+      const range = XLSX.utils.decode_range(sheet['!ref']);
+      const mergeMap = buildSheetJsMergeMap(sheet);
+      const table = document.createElement('table');
+      const fragment = document.createDocumentFragment();
+      let hasVisibleValue = false;
+
+      for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+        const tr = document.createElement('tr');
+
+        for (let columnIndex = range.s.c; columnIndex <= range.e.c; columnIndex += 1) {
+          const key = rowIndex + ':' + columnIndex;
+          if (mergeMap.covered.has(key)) continue;
+
+          const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+          const workbookCell = sheet[address];
+          const cell = document.createElement(rowIndex === range.s.r ? 'th' : 'td');
+          const text = textFromSheetJsCell(workbookCell);
+          const merge = mergeMap.starts.get(key);
+
+          applySheetJsCellStyle(cell, workbookCell);
+          appendCell(tr, cell, text, merge);
+          if (text) hasVisibleValue = true;
+        }
+
+        fragment.appendChild(tr);
+      }
+
+      if (!hasVisibleValue) {
+        setStatus('这个工作表没有可显示的数据。');
+        return;
+      }
+
+      table.appendChild(fragment);
+      sheetEl.replaceChildren(table);
+      statusEl.hidden = true;
+      sheetEl.hidden = false;
+    }
+
+    function renderSheet(viewerWorkbook, sheetName) {
+      for (const button of tabsEl.querySelectorAll('button')) {
+        button.classList.toggle('active', button.dataset.sheet === sheetName);
+      }
+
+      if (viewerWorkbook.kind === 'exceljs') {
+        renderExcelJsSheet(viewerWorkbook.workbook, sheetName);
+      } else {
+        renderSheetJsSheet(viewerWorkbook.workbook, sheetName);
+      }
+    }
+
+    async function loadExcelJsWorkbook(data) {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(data);
+      return {
+        kind: 'exceljs',
+        workbook,
+        sheetNames: workbook.worksheets.map((worksheet) => worksheet.name),
+      };
+    }
+
+    function loadSheetJsWorkbook(data) {
+      const workbook = XLSX.read(data, { type: 'array', cellDates: true, cellStyles: true });
+      return {
+        kind: 'sheetjs',
+        workbook,
+        sheetNames: workbook.SheetNames,
+      };
+    }
+
     async function loadWorkbook() {
-      if (!window.XLSX) {
+      const response = await fetch(window.location.pathname + '?raw=1', { credentials: 'same-origin' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const data = await response.arrayBuffer();
+      const lowerPath = window.location.pathname.toLowerCase();
+      const canUseExcelJs = (lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xlsm')) && window.ExcelJS;
+      let viewerWorkbook;
+
+      if (canUseExcelJs) {
+        viewerWorkbook = await loadExcelJsWorkbook(data);
+      } else if (window.XLSX) {
+        viewerWorkbook = loadSheetJsWorkbook(data);
+      } else {
         setStatus('Excel 查看器加载失败，请检查浏览器是否可以访问 jsDelivr CDN。');
         return;
       }
 
-      const response = await fetch(window.location.pathname + '?raw=1', { credentials: 'same-origin' });
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-      const data = await response.arrayBuffer();
-      const workbook = XLSX.read(data, { type: 'array', cellDates: true, cellStyles: true });
-      if (!workbook.SheetNames.length) {
+      if (!viewerWorkbook.sheetNames.length) {
         setStatus('这个 Excel 文件没有工作表。');
         return;
       }
 
-      tabsEl.replaceChildren(...workbook.SheetNames.map((sheetName) => {
+      tabsEl.replaceChildren(...viewerWorkbook.sheetNames.map((sheetName) => {
         const button = document.createElement('button');
         button.type = 'button';
         button.dataset.sheet = sheetName;
         button.textContent = sheetName;
-        button.addEventListener('click', () => renderSheet(workbook, sheetName));
+        button.addEventListener('click', () => renderSheet(viewerWorkbook, sheetName));
         return button;
       }));
-      renderSheet(workbook, workbook.SheetNames[0]);
+      renderSheet(viewerWorkbook, viewerWorkbook.sheetNames[0]);
     }
 
     loadWorkbook().catch((error) => {
