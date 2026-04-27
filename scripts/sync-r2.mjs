@@ -91,7 +91,18 @@ function changedFilesSince(commit) {
   const diff = runGit(["diff", "--name-only", "--diff-filter=ACMRT", `${commit}..HEAD`]);
   if (diff.status !== 0) return null;
 
-  return diff.stdout
+  return gitPathsToFiles(diff.stdout);
+}
+
+function filesChangedInCurrentCommit() {
+  const diff = runGit(["diff-tree", "--no-commit-id", "--name-only", "-r", "--diff-filter=ACMRT", "HEAD"]);
+  if (diff.status !== 0) return null;
+
+  return gitPathsToFiles(diff.stdout);
+}
+
+function gitPathsToFiles(stdout) {
+  return stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
@@ -197,16 +208,35 @@ if (!headCommit) {
   console.log("Could not read current git commit; syncing all content files.");
   files = collectFiles(root);
 } else if (!state?.commit) {
-  console.log("No previous R2 sync state found; syncing all content files.");
-  files = collectFiles(root);
+  files = filesChangedInCurrentCommit();
+  if (files === null) {
+    console.log("No previous R2 sync state found and current commit diff is unavailable; syncing all content files.");
+    files = collectFiles(root);
+  } else {
+    console.log(
+      `No previous R2 sync state found; current commit ${headCommit.slice(0, 7)} has ${files.length} changed content file(s) to sync.`,
+    );
+  }
 } else if (!isAncestor(state.commit)) {
-  console.log("Previous R2 sync commit is not in the current history; syncing all content files.");
-  files = collectFiles(root);
+  files = filesChangedInCurrentCommit();
+  if (files === null) {
+    console.log("Previous R2 sync commit is not in the current history and current commit diff is unavailable; syncing all content files.");
+    files = collectFiles(root);
+  } else {
+    console.log(
+      `Previous R2 sync commit is not in the current history; current commit ${headCommit.slice(0, 7)} has ${files.length} changed content file(s) to sync.`,
+    );
+  }
 } else {
   files = changedFilesSince(state.commit);
   if (files === null) {
-    console.log("Git diff unavailable; syncing all content files.");
-    files = collectFiles(root);
+    files = filesChangedInCurrentCommit();
+    if (files === null) {
+      console.log("Git diff unavailable; syncing all content files.");
+      files = collectFiles(root);
+    } else {
+      console.log(`Git range diff unavailable; current commit ${headCommit.slice(0, 7)} has ${files.length} changed content file(s) to sync.`);
+    }
   } else {
     console.log(
       `Git diff from ${state.commit.slice(0, 7)} to ${headCommit.slice(0, 7)} found ${files.length} changed content file(s) to sync.`,
