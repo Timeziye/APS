@@ -43,6 +43,21 @@ const skippedFiles = new Set([
   ".dev.vars",
 ]);
 
+const repairStatePrefixes = ["8fe54f5", "061f082", "9c94e80", "0b32e2a", "50034c3"];
+const knownRepairFiles = [
+  "010.aru",
+  "2026-04-WorkLog.html",
+  "APS&MySQL.pdf",
+  "Asprova&Oracle.pdf",
+  "AsprovaModelDemo.md",
+  "AsprovaStufyNote.html",
+  "MySQLBase.html",
+  "ServerInstall&Set.html",
+  "index.html",
+  "index.md",
+  "winserver.html",
+];
+
 function shouldSkip(relativePath) {
   const parts = relativePath.split(path.sep);
   if (parts.some((part) => skippedDirs.has(part))) return true;
@@ -219,6 +234,28 @@ function includeRecentChangedFilesForRepair(files) {
   return [...byPath.values()];
 }
 
+function includeKnownRepairFiles(files, state) {
+  const stateCommit = state?.commit || "";
+  if (!repairStatePrefixes.some((prefixValue) => stateCommit.startsWith(prefixValue))) {
+    return files;
+  }
+
+  const byPath = new Map(files.map((file) => [path.relative(root, file), file]));
+
+  for (const relativePath of knownRepairFiles) {
+    if (byPath.has(relativePath)) continue;
+
+    const absolutePath = path.resolve(root, relativePath);
+    if (!existsSync(absolutePath) || !statSync(absolutePath).isFile()) continue;
+    if (shouldSkip(relativePath)) continue;
+
+    console.log(`Adding known repair upload: ${relativePath}`);
+    byPath.set(relativePath, absolutePath);
+  }
+
+  return [...byPath.values()];
+}
+
 function saveSyncState(commit) {
   const dir = mkdtempSync(path.join(tmpdir(), "r2-sync-state-"));
   const file = path.join(dir, "state.json");
@@ -302,6 +339,8 @@ if (files.length === 0) {
   console.log("No changed content files from git diff; repairing by uploading recent changed content files.");
   files = includeRecentChangedFilesForRepair(files);
 }
+
+files = includeKnownRepairFiles(files, state);
 
 if (files.length === 0) {
   console.log("No content files need upload.");
