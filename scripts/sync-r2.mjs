@@ -182,20 +182,23 @@ function uploadFile(file) {
     throw new Error(`Failed to upload ${relativePath}`);
   }
 
-  verifyObjectUploaded(objectKey, relativePath);
+  verifyObjectUploaded(file, objectKey, relativePath);
 }
 
-function objectExists(objectKey) {
+function objectMatchesFile(file, objectKey) {
+  const dir = mkdtempSync(path.join(tmpdir(), "r2-object-check-"));
+  const downloadedFile = path.join(dir, "object");
   const result = wrangler(
-    ["r2", "object", "get", `${bucket}/${objectKey}`, "--pipe", "--remote"],
-    { stdio: ["ignore", "ignore", "pipe"], encoding: "buffer" },
+    ["r2", "object", "get", `${bucket}/${objectKey}`, "--file", downloadedFile, "--remote"],
+    { stdio: "pipe", encoding: "utf8" },
   );
 
-  return result.status === 0;
+  if (result.status !== 0 || !existsSync(downloadedFile)) return false;
+  return statSync(downloadedFile).size === statSync(file).size;
 }
 
-function verifyObjectUploaded(objectKey, relativePath) {
-  if (!objectExists(objectKey)) {
+function verifyObjectUploaded(file, objectKey, relativePath) {
+  if (!objectMatchesFile(file, objectKey)) {
     throw new Error(`Uploaded object was not found in R2: ${relativePath}`);
   }
 }
@@ -208,7 +211,7 @@ function includeMissingRecentFiles(files) {
     if (byPath.has(relativePath)) continue;
 
     const objectKey = `${prefix}/${relativePath.split(path.sep).join("/")}`;
-    if (!objectExists(objectKey)) {
+    if (!objectMatchesFile(file, objectKey)) {
       console.log(`Recent changed file is missing from R2; adding repair upload: ${relativePath}`);
       byPath.set(relativePath, file);
     }
