@@ -101,6 +101,24 @@ function filesChangedInCurrentCommit() {
   return gitPathsToFiles(diff.stdout);
 }
 
+function filesChangedInRecentCommits() {
+  const revList = runGit(["rev-list", "--max-count=20", "HEAD"]);
+  if (revList.status !== 0) return [];
+
+  const commits = revList.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (commits.length < 2) return filesChangedInCurrentCommit() ?? [];
+
+  const oldestCommit = commits.at(-1);
+  const diff = runGit(["diff", "--name-only", "--diff-filter=ACMRT", `${oldestCommit}..HEAD`]);
+  if (diff.status !== 0) return [];
+
+  return gitPathsToFiles(diff.stdout);
+}
+
 function gitPathsToFiles(stdout) {
   return stdout
     .split(/\r?\n/)
@@ -163,6 +181,40 @@ function uploadFile(file) {
   if (result.status !== 0) {
     throw new Error(`Failed to upload ${relativePath}`);
   }
+
+  verifyObjectUploaded(objectKey, relativePath);
+}
+
+function objectExists(objectKey) {
+  const result = wrangler(
+    ["r2", "object", "get", `${bucket}/${objectKey}`, "--pipe", "--remote"],
+    { stdio: ["ignore", "ignore", "pipe"], encoding: "buffer" },
+  );
+
+  return result.status === 0;
+}
+
+function verifyObjectUploaded(objectKey, relativePath) {
+  if (!objectExists(objectKey)) {
+    throw new Error(`Uploaded object was not found in R2: ${relativePath}`);
+  }
+}
+
+function includeMissingRecentFiles(files) {
+  const byPath = new Map(files.map((file) => [path.relative(root, file), file]));
+
+  for (const file of filesChangedInRecentCommits()) {
+    const relativePath = path.relative(root, file);
+    if (byPath.has(relativePath)) continue;
+
+    const objectKey = `${prefix}/${relativePath.split(path.sep).join("/")}`;
+    if (!objectExists(objectKey)) {
+      console.log(`Recent changed file is missing from R2; adding repair upload: ${relativePath}`);
+      byPath.set(relativePath, file);
+    }
+  }
+
+  return [...byPath.values()];
 }
 
 function saveSyncState(commit) {
@@ -245,7 +297,12 @@ if (!headCommit) {
 }
 
 if (files.length === 0) {
-  console.log("No changed content files to sync. R2 content upload skipped.");
+  console.log("No changed content files from git diff; checking recent commits for missing R2 objects.");
+  files = includeMissingRecentFiles(files);
+}
+
+if (files.length === 0) {
+  console.log("No content files need upload.");
 } else {
   console.log(`Syncing ${files.length} file(s) to remote r2://${bucket}/${prefix}/`);
 }
