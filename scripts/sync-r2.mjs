@@ -104,7 +104,7 @@ function filesChangedInCurrentCommit() {
 }
 
 function filesChangedInRecentCommits() {
-  const revList = runGit(["rev-list", "--max-count=20", "HEAD"]);
+  const revList = runGit(["rev-list", "--max-count=8", "HEAD"]);
   if (revList.status !== 0) return [];
 
   const commits = revList.stdout
@@ -205,18 +205,15 @@ function verifyObjectUploaded(file, objectKey, relativePath) {
   }
 }
 
-function includeMissingRecentFiles(files) {
+function includeRecentChangedFilesForRepair(files) {
   const byPath = new Map(files.map((file) => [path.relative(root, file), file]));
 
   for (const file of filesChangedInRecentCommits()) {
     const relativePath = path.relative(root, file);
     if (byPath.has(relativePath)) continue;
 
-    const objectKey = `${prefix}/${relativePath.split(path.sep).join("/")}`;
-    if (!objectMatchesFile(file, objectKey)) {
-      console.log(`Recent changed file is missing from R2; adding repair upload: ${relativePath}`);
-      byPath.set(relativePath, file);
-    }
+    console.log(`Adding recent changed file for repair upload: ${relativePath}`);
+    byPath.set(relativePath, file);
   }
 
   return [...byPath.values()];
@@ -302,8 +299,8 @@ if (!headCommit) {
 }
 
 if (files.length === 0) {
-  console.log("No changed content files from git diff; checking recent commits for missing R2 objects.");
-  files = includeMissingRecentFiles(files);
+  console.log("No changed content files from git diff; repairing by uploading recent changed content files.");
+  files = includeRecentChangedFilesForRepair(files);
 }
 
 if (files.length === 0) {
