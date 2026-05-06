@@ -32,12 +32,4 @@ tags: ["Directory"]
 
 ## [4月份工作日志点击跳转查看](https://aps.tynote.cn/2026-04-WorkLog.html)
 
-# 录制
-
-<font color='red'><注>：以下资源为个人录制，不排除某些部分存在不严谨或有误的情况，仅供参考</font>
-
-## 正逆方向排程&瓶颈中心排程
-
-### [课件](https://aps.tynote.cn/001.pptx)
-
-### [视频](https://aps.tynote.cn/001.mp4)
+## [4月份工作日志点击跳转查看](https://aps.tynote.cn/2026-05-WorkLog.html)
