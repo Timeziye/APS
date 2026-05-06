@@ -32,8 +32,6 @@ const npx = process.platform === "win32" ? "npx.cmd" : "npx";
 
 const skippedDirs = new Set([".git", ".github", ".wrangler", "node_modules"]);
 const skippedFiles = new Set([
-  "001.mp4",
-  "001.pptx",
   "worker.js",
   "wrangler.toml",
   "package-lock.json",
