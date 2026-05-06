@@ -41,10 +41,11 @@ const skippedFiles = new Set([
   ".dev.vars",
 ]);
 
-const repairStatePrefixes = ["8fe54f5", "061f082", "9c94e80", "0b32e2a", "50034c3"];
+const repairStatePrefixes = ["8fe54f5", "061f082", "9c94e80", "0b32e2a", "50034c3", "e35cc8a"];
 const knownRepairFiles = [
   "010.aru",
   "2026-04-WorkLog.html",
+  "2026-05-WorkLog.md",
   "APS&MySQL.pdf",
   "Asprova&Oracle.pdf",
   "AsprovaModelDemo.md",
@@ -55,6 +56,7 @@ const knownRepairFiles = [
   "index.md",
   "winserver.html",
 ];
+const knownRepairDeletedFiles = ["DailyWorkLog.md", "001.mp4", "001.pptx"];
 
 function shouldSkip(relativePath) {
   const parts = relativePath.split(path.sep);
@@ -134,6 +136,18 @@ function filesChangedInRecentCommits() {
   return gitPathsToFiles(diff.stdout);
 }
 
+function deletedPathsSince(commit) {
+  const diff = runGit(["diff", "--name-status", "--diff-filter=DR", `${commit}..HEAD`]);
+  if (diff.status !== 0) return [];
+  return gitNameStatusToDeletedPaths(diff.stdout);
+}
+
+function deletedPathsInCurrentCommit() {
+  const diff = runGit(["diff-tree", "--no-commit-id", "--name-status", "-r", "--diff-filter=DR", "HEAD"]);
+  if (diff.status !== 0) return [];
+  return gitNameStatusToDeletedPaths(diff.stdout);
+}
+
 function gitPathsToFiles(stdout) {
   return stdout
     .split(/\r?\n/)
@@ -145,6 +159,21 @@ function gitPathsToFiles(stdout) {
       if (!statSync(absolutePath).isFile()) return false;
       return !shouldSkip(path.relative(root, absolutePath));
     });
+}
+
+function gitNameStatusToDeletedPaths(stdout) {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const parts = line.split(/\t+/);
+      const status = parts[0] || "";
+      if (status === "D" && parts[1]) return [parts[1]];
+      if (status.startsWith("R") && parts[1]) return [parts[1]];
+      return [];
+    })
+    .filter((relativePath) => !shouldSkip(relativePath));
 }
 
 function wrangler(args, options = {}) {
@@ -218,6 +247,24 @@ function verifyObjectUploaded(file, objectKey, relativePath) {
   }
 }
 
+function deleteObject(relativePath) {
+  const objectKey = `${prefix}/${relativePath.split(path.sep).join("/")}`;
+  console.log(`Deleting ${objectKey}`);
+
+  const result = wrangler(
+    ["r2", "object", "delete", `${bucket}/${objectKey}`, "--remote"],
+    { stdio: "pipe", encoding: "utf8" },
+  );
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    console.log(`Delete skipped or failed for ${relativePath}: ${result.stderr || result.stdout || "no details"}`);
+  }
+}
+
 function includeRecentChangedFilesForRepair(files) {
   const byPath = new Map(files.map((file) => [path.relative(root, file), file]));
 
@@ -252,6 +299,22 @@ function includeKnownRepairFiles(files, state) {
   }
 
   return [...byPath.values()];
+}
+
+function includeKnownRepairDeletes(deletePaths, state) {
+  const stateCommit = state?.commit || "";
+  if (!repairStatePrefixes.some((prefixValue) => stateCommit.startsWith(prefixValue))) {
+    return deletePaths;
+  }
+
+  const byPath = new Set(deletePaths);
+  for (const relativePath of knownRepairDeletedFiles) {
+    if (shouldSkip(relativePath)) continue;
+    console.log(`Adding known repair delete: ${relativePath}`);
+    byPath.add(relativePath);
+  }
+
+  return [...byPath];
 }
 
 function saveSyncState(commit) {
@@ -292,12 +355,14 @@ function saveSyncState(commit) {
 const headCommit = currentCommit();
 const state = loadSyncState();
 let files;
+let deletePaths = [];
 
 if (!headCommit) {
   console.log("Could not read current git commit; syncing all content files.");
   files = collectFiles(root);
 } else if (!state?.commit) {
   files = filesChangedInCurrentCommit();
+  deletePaths = deletedPathsInCurrentCommit();
   if (files === null) {
     console.log("No previous R2 sync state found and current commit diff is unavailable; syncing all content files.");
     files = collectFiles(root);
@@ -308,6 +373,7 @@ if (!headCommit) {
   }
 } else if (!isAncestor(state.commit)) {
   files = filesChangedInCurrentCommit();
+  deletePaths = deletedPathsInCurrentCommit();
   if (files === null) {
     console.log("Previous R2 sync commit is not in the current history and current commit diff is unavailable; syncing all content files.");
     files = collectFiles(root);
@@ -318,8 +384,10 @@ if (!headCommit) {
   }
 } else {
   files = changedFilesSince(state.commit);
+  deletePaths = deletedPathsSince(state.commit);
   if (files === null) {
     files = filesChangedInCurrentCommit();
+    deletePaths = deletedPathsInCurrentCommit();
     if (files === null) {
       console.log("Git diff unavailable; syncing all content files.");
       files = collectFiles(root);
@@ -339,6 +407,17 @@ if (files.length === 0) {
 }
 
 files = includeKnownRepairFiles(files, state);
+deletePaths = includeKnownRepairDeletes(deletePaths, state);
+
+if (deletePaths.length === 0) {
+  console.log("No content files need deletion.");
+} else {
+  console.log(`Deleting ${deletePaths.length} object(s) from remote r2://${bucket}/${prefix}/`);
+}
+
+for (const relativePath of deletePaths) {
+  deleteObject(relativePath);
+}
 
 if (files.length === 0) {
   console.log("No content files need upload.");
