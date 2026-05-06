@@ -41,10 +41,11 @@ const skippedFiles = new Set([
   ".dev.vars",
 ]);
 
-const repairStatePrefixes = ["8fe54f5", "061f082", "9c94e80", "0b32e2a", "50034c3", "e35cc8a"];
+const repairStatePrefixes = ["8fe54f5", "061f082", "9c94e80", "0b32e2a", "50034c3", "e35cc8a", "6a84fa9", "bf6db63"];
 const knownRepairFiles = [
   "010.aru",
   "2026-04-WorkLog.html",
+  "2026-05-WorkLog.html",
   "2026-05-WorkLog.md",
   "APS&MySQL.pdf",
   "Asprova&Oracle.pdf",
@@ -104,6 +105,36 @@ function isAncestor(commit) {
   return result.status === 0;
 }
 
+function isShallowRepository() {
+  const result = runGit(["rev-parse", "--is-shallow-repository"]);
+  return result.status === 0 && result.stdout.trim() === "true";
+}
+
+function fetchGitHistoryFor(commit) {
+  const attempts = isShallowRepository()
+    ? [
+        ["fetch", "--no-tags", "--deepen=50", "origin"],
+        ["fetch", "--no-tags", "--deepen=200", "origin"],
+        ["fetch", "--no-tags", "--unshallow", "origin"],
+      ]
+    : [["fetch", "--no-tags", "origin", commit]];
+
+  for (const args of attempts) {
+    const result = runGit(args);
+    if (isAncestor(commit)) {
+      console.log(`Fetched enough git history to diff from ${commit.slice(0, 7)}.`);
+      return true;
+    }
+
+    if (result.status !== 0) {
+      const details = (result.stderr || result.stdout || "").trim();
+      console.log(`Git ${args.join(" ")} did not make ${commit.slice(0, 7)} available${details ? `: ${details}` : "."}`);
+    }
+  }
+
+  return false;
+}
+
 function changedFilesSince(commit) {
   const diff = runGit(["diff", "--name-only", "--diff-filter=ACMRT", `${commit}..HEAD`]);
   if (diff.status !== 0) return null;
@@ -136,6 +167,72 @@ function filesChangedInRecentCommits() {
   return gitPathsToFiles(diff.stdout);
 }
 
+function githubRepository() {
+  const result = runGit(["config", "--get", "remote.origin.url"]);
+  if (result.status !== 0) return null;
+
+  const remote = result.stdout.trim();
+  const match = remote.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/i);
+  if (!match) return null;
+
+  return {
+    owner: match[1],
+    repo: match[2].replace(/\.git$/i, ""),
+  };
+}
+
+async function filesChangedFromGitHubCompare(baseCommit, headCommit) {
+  if (typeof fetch !== "function") return null;
+
+  const repository = githubRepository();
+  if (!repository) return null;
+
+  const url = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(
+    repository.repo,
+  )}/compare/${encodeURIComponent(baseCommit)}...${encodeURIComponent(headCommit)}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "aps-r2-sync",
+      },
+    });
+
+    if (!response.ok) {
+      console.log(`GitHub compare unavailable (${response.status}); falling back to local git diff.`);
+      return null;
+    }
+
+    const data = await response.json();
+    if (!Array.isArray(data.files)) return null;
+
+    const uploadPaths = [];
+    const deletePaths = [];
+
+    for (const file of data.files) {
+      if (!file?.filename) continue;
+
+      if (file.status === "removed") {
+        deletePaths.push(file.filename);
+      } else if (file.status === "renamed") {
+        if (file.previous_filename) deletePaths.push(file.previous_filename);
+        uploadPaths.push(file.filename);
+      } else {
+        uploadPaths.push(file.filename);
+      }
+    }
+
+    return {
+      files: relativePathsToFiles(uploadPaths),
+      deletePaths: deletePaths.filter((relativePath) => !shouldSkip(relativePath)),
+    };
+  } catch (error) {
+    console.log(`GitHub compare failed; falling back to local git diff: ${error.message}`);
+    return null;
+  }
+}
+
 function deletedPathsSince(commit) {
   const diff = runGit(["diff", "--name-status", "--diff-filter=DR", `${commit}..HEAD`]);
   if (diff.status !== 0) return [];
@@ -149,9 +246,17 @@ function deletedPathsInCurrentCommit() {
 }
 
 function gitPathsToFiles(stdout) {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
+  return relativePathsToFiles(
+    stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean),
+  );
+}
+
+function relativePathsToFiles(relativePaths) {
+  return relativePaths
+    .map((line) => String(line).trim())
     .filter(Boolean)
     .map((relativePath) => path.resolve(root, relativePath))
     .filter((absolutePath) => {
@@ -352,85 +457,134 @@ function saveSyncState(commit) {
   }
 }
 
-const headCommit = currentCommit();
-const state = loadSyncState();
-let files;
-let deletePaths = [];
+async function main() {
+  const headCommit = currentCommit();
+  const state = loadSyncState();
+  let files;
+  let deletePaths = [];
+  let needsRecentRepair = false;
 
-if (!headCommit) {
-  console.log("Could not read current git commit; syncing all content files.");
-  files = collectFiles(root);
-} else if (!state?.commit) {
-  files = filesChangedInCurrentCommit();
-  deletePaths = deletedPathsInCurrentCommit();
-  if (files === null) {
-    console.log("No previous R2 sync state found and current commit diff is unavailable; syncing all content files.");
+  if (!headCommit) {
+    console.log("Could not read current git commit; syncing all content files.");
     files = collectFiles(root);
-  } else {
-    console.log(
-      `No previous R2 sync state found; current commit ${headCommit.slice(0, 7)} has ${files.length} changed content file(s) to sync.`,
-    );
-  }
-} else if (!isAncestor(state.commit)) {
-  files = filesChangedInCurrentCommit();
-  deletePaths = deletedPathsInCurrentCommit();
-  if (files === null) {
-    console.log("Previous R2 sync commit is not in the current history and current commit diff is unavailable; syncing all content files.");
-    files = collectFiles(root);
-  } else {
-    console.log(
-      `Previous R2 sync commit is not in the current history; current commit ${headCommit.slice(0, 7)} has ${files.length} changed content file(s) to sync.`,
-    );
-  }
-} else {
-  files = changedFilesSince(state.commit);
-  deletePaths = deletedPathsSince(state.commit);
-  if (files === null) {
+  } else if (!state?.commit) {
     files = filesChangedInCurrentCommit();
     deletePaths = deletedPathsInCurrentCommit();
     if (files === null) {
-      console.log("Git diff unavailable; syncing all content files.");
+      console.log("No previous R2 sync state found and current commit diff is unavailable; syncing all content files.");
       files = collectFiles(root);
     } else {
-      console.log(`Git range diff unavailable; current commit ${headCommit.slice(0, 7)} has ${files.length} changed content file(s) to sync.`);
+      console.log(
+        `No previous R2 sync state found; current commit ${headCommit.slice(0, 7)} has ${files.length} changed content file(s) to sync.`,
+      );
+    }
+  } else if (!isAncestor(state.commit)) {
+    if (fetchGitHistoryFor(state.commit)) {
+      files = changedFilesSince(state.commit);
+      deletePaths = deletedPathsSince(state.commit);
+      if (files !== null) {
+        console.log(
+          `Fetched git diff from ${state.commit.slice(0, 7)} to ${headCommit.slice(0, 7)} found ${files.length} changed content file(s) to sync.`,
+        );
+      }
+    }
+
+    if (files === undefined || files === null) {
+      const compare = await filesChangedFromGitHubCompare(state.commit, headCommit);
+      if (compare) {
+        files = compare.files;
+        deletePaths = compare.deletePaths;
+        console.log(
+          `Previous R2 sync commit is not in local history; GitHub compare from ${state.commit.slice(0, 7)} to ${headCommit.slice(
+            0,
+            7,
+          )} found ${files.length} changed content file(s) and ${deletePaths.length} deleted path(s) to sync.`,
+        );
+      } else {
+        needsRecentRepair = true;
+        files = filesChangedInCurrentCommit();
+        deletePaths = deletedPathsInCurrentCommit();
+        if (files === null) {
+          console.log("Previous R2 sync commit is not in the current history and current commit diff is unavailable; syncing all content files.");
+          files = collectFiles(root);
+        } else {
+          console.log(
+            `Previous R2 sync commit is not in the current history; current commit ${headCommit.slice(
+              0,
+              7,
+            )} has ${files.length} changed content file(s) to sync.`,
+          );
+        }
+      }
     }
   } else {
-    console.log(
-      `Git diff from ${state.commit.slice(0, 7)} to ${headCommit.slice(0, 7)} found ${files.length} changed content file(s) to sync.`,
-    );
+    files = changedFilesSince(state.commit);
+    deletePaths = deletedPathsSince(state.commit);
+    if (files === null) {
+      const compare = await filesChangedFromGitHubCompare(state.commit, headCommit);
+      if (compare) {
+        files = compare.files;
+        deletePaths = compare.deletePaths;
+        console.log(
+          `Local git range diff unavailable; GitHub compare from ${state.commit.slice(0, 7)} to ${headCommit.slice(
+            0,
+            7,
+          )} found ${files.length} changed content file(s) and ${deletePaths.length} deleted path(s) to sync.`,
+        );
+      } else {
+        needsRecentRepair = true;
+        files = filesChangedInCurrentCommit();
+        deletePaths = deletedPathsInCurrentCommit();
+        if (files === null) {
+          console.log("Git diff unavailable; syncing all content files.");
+          files = collectFiles(root);
+        } else {
+          console.log(`Git range diff unavailable; current commit ${headCommit.slice(0, 7)} has ${files.length} changed content file(s) to sync.`);
+        }
+      }
+    } else {
+      console.log(
+        `Git diff from ${state.commit.slice(0, 7)} to ${headCommit.slice(0, 7)} found ${files.length} changed content file(s) to sync.`,
+      );
+    }
   }
+
+  if (files.length === 0) {
+    console.log("No changed content files from git diff; repairing by uploading recent changed content files.");
+    files = includeRecentChangedFilesForRepair(files);
+  } else if (needsRecentRepair) {
+    console.log("Local git history was incomplete; adding recent changed content files for repair.");
+    files = includeRecentChangedFilesForRepair(files);
+  }
+
+  files = includeKnownRepairFiles(files, state);
+  deletePaths = includeKnownRepairDeletes(deletePaths, state);
+
+  if (deletePaths.length === 0) {
+    console.log("No content files need deletion.");
+  } else {
+    console.log(`Deleting ${deletePaths.length} object(s) from remote r2://${bucket}/${prefix}/`);
+  }
+
+  for (const relativePath of deletePaths) {
+    deleteObject(relativePath);
+  }
+
+  if (files.length === 0) {
+    console.log("No content files need upload.");
+  } else {
+    console.log(`Syncing ${files.length} file(s) to remote r2://${bucket}/${prefix}/`);
+  }
+
+  for (const file of files) {
+    uploadFile(file);
+  }
+
+  if (headCommit) {
+    saveSyncState(headCommit);
+  }
+
+  console.log("R2 sync completed.");
 }
 
-if (files.length === 0) {
-  console.log("No changed content files from git diff; repairing by uploading recent changed content files.");
-  files = includeRecentChangedFilesForRepair(files);
-}
-
-files = includeKnownRepairFiles(files, state);
-deletePaths = includeKnownRepairDeletes(deletePaths, state);
-
-if (deletePaths.length === 0) {
-  console.log("No content files need deletion.");
-} else {
-  console.log(`Deleting ${deletePaths.length} object(s) from remote r2://${bucket}/${prefix}/`);
-}
-
-for (const relativePath of deletePaths) {
-  deleteObject(relativePath);
-}
-
-if (files.length === 0) {
-  console.log("No content files need upload.");
-} else {
-  console.log(`Syncing ${files.length} file(s) to remote r2://${bucket}/${prefix}/`);
-}
-
-for (const file of files) {
-  uploadFile(file);
-}
-
-if (headCommit) {
-  saveSyncState(headCommit);
-}
-
-console.log("R2 sync completed.");
+await main();
