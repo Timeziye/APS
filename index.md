@@ -24,7 +24,7 @@ tags: ["Directory"]
 
 ## [APS连接Oracle配置](https://aps.tynote.cn/Asprova&Oracle.pdf)
 
-## [WinServer服务器](https://aps.tynote.cn/Winserver.html)
+## [WinServer服务器](https://aps.tynote.cn/WinServer.html)
 
 ## [服务器安装及环境配置](https://aps.tynote.cn/ServerInstall&Set.html)
 
