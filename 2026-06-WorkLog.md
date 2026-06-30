@@ -82,6 +82,70 @@ tags: ["2026-06-WorkLog"]
 
 ![image-20260604170215512](https://img.tynote.cn/img/typora/20260604170215591.png)
 
+# 06/05
+
+①导入CSP缺料号
+
+②会议纪要：和MES开会确定前几天测试发现平台问题的解决方案、未来报工接入方案、未来计划发布接口等内容
+
+③测试平台功能
+
+测试内容：系统更新了: 1 工艺bom导出失败的问题已经修复, 2 资源表的基本数量字段在编辑时已经移除(数据库字段保留) 3 制造订单新增导出功能.另外标准工艺bom导入的话, 需要把原来的标准工艺BOM删除然后再导入,否则会重复.这个问题后面修改导入机制时会修复.
+
+测试结果：①工艺BOM导出修复③制造订单导出修复。这两个上海和常州都没有问题了，而且导出速度比之前快很多，大概15秒左右就可以导出，②资源表的【基本数量】字段仍然存在
+
+![image-20260606101128827](https://img.tynote.cn/img/typora/20260606101135912.png#800w)
+
+④导出上海和常州工艺BOM并汇总到一张表上
+
+# 06/08
+
+①删除模型内除模具以外的旧资源
+
+将模型内资源与MES平台资源比对，比对结果如下，且删除的资源已在MES平台中进行核实，结论为均为MES中不存在的资源
+
+![image-20260608123846442](https://img.tynote.cn/img/typora/20260608123853586.png#800w)
+
+②针对之前补充的CSP工艺BOM，在MES平台进行料号级工艺BOM补充和订单级工艺BOM生成
+
+③参数化工时修改
+
+APS配置为参数化工时：CTB-BZ，CTB包装工时60s，总数量超过1400件，工时不超过3天；HAS-WG，软管包装工时40S，总数量超过2000件，工时不超过3天；CTB-MW，CTB金属波纹管 包装工时60s，总数量超过1400件，工时不超过3天；——暂时填写在工艺BOM总表的【后设置】字段，待董老师确认后覆盖到【制造】字段
+
+OP|Hose-ZZ 资源量从6改为1，删除相应的生产日历  ——资源量已改为1，生产日历已删除
+
+④换型时间重新收集
+
+Hose04,05,06,07,08,09换型时间改为5min，PD|CTB-43-YB设为5m；——已改到前设置为5m，换型表对应的7条记录已删，待确认
+
+⑤资源分派有效条件更新及新增
+
+⑥修改PD|CTB-42-YB切管机外径、长度、数量参数和优先级；资源分派有效条件表达式细化到制造BOM的工序有效条件表达式上；
+
+——已迁移到制造BOM的工序有效条件表达式上；资源表的分派有效条件表达式暂未删除；待确认
+
+
+
+⑦CTB-WG，ERP内【折弯数】为0的时候，是没有30工序CTB-WG的
+
+a. 检查一下标准工艺BOM是弯管1-8，焊接1-8的工作单，对应型号表上的弯曲数量是否都有值。——均有值，无空值
+
+```mysql
+SELECT process_bom_category,bend_num FROM t_item where process_bom_category LIKE '%弯管%';
+SELECT b.code,b.bend_num FROM t_item b INNER JOIN t_manufacturing_order a ON b.code=a.item AND b.process_bom_category LIKE '%弯管%';
+SELECT DISTINCT b.bend_num FROM t_item b INNER JOIN t_manufacturing_order a where  b.code=a.item AND b.process_bom_category LIKE '%弯管%';
+SELECT b.code,b.bend_num FROM t_item b INNER JOIN t_manufacturing_order a ON b.code=a.item AND b.process_bom_category LIKE '%焊接%';
+SELECT DISTINCT b.bend_num FROM t_item b INNER JOIN t_manufacturing_order a where  b.code=a.item AND b.process_bom_category LIKE '%焊接%';
+```
+
+b. 工艺BOM上在工序CTB-WG设置工序有效条件表达式 ——已添加工序有效条件ME.Item.bend_num>0，待确认
+
+
+
+# 06/11
+
+①汉萨模型功能仿制
+
 ## 汉萨项目
 
 ### 初始化DBIO链接
@@ -410,66 +474,3 @@ Min(ME.Operations,TARGET.Kitting_TQ)
 【002导入工作输入指令汇总信息】：导入242:齐套计算-导入-Ins-PegInvQ、243:齐套计算-导入-Ins-PegERQ、244:齐计算-导入-Ins-PegTQ、245:齐套计算-导入-Ins-OrKitInvQ、246:齐套计算-导入-Ins-OrKitTQ
 
 ![image-20260701013806549](https://img.tynote.cn/img/typora/20260701013806607.png#800w)
-
-
-
-# 06/05
-
-①导入CSP缺料号
-
-②会议纪要：和MES开会确定前几天测试发现平台问题的解决方案、未来报工接入方案、未来计划发布接口等内容
-
-③测试平台功能
-
-测试内容：系统更新了: 1 工艺bom导出失败的问题已经修复, 2 资源表的基本数量字段在编辑时已经移除(数据库字段保留) 3 制造订单新增导出功能.另外标准工艺bom导入的话, 需要把原来的标准工艺BOM删除然后再导入,否则会重复.这个问题后面修改导入机制时会修复.
-
-测试结果：①工艺BOM导出修复③制造订单导出修复。这两个上海和常州都没有问题了，而且导出速度比之前快很多，大概15秒左右就可以导出，②资源表的【基本数量】字段仍然存在
-
-![image-20260606101128827](https://img.tynote.cn/img/typora/20260606101135912.png#800w)
-
-④导出上海和常州工艺BOM并汇总到一张表上
-
-# 06/08
-
-①删除模型内除模具以外的旧资源
-
-将模型内资源与MES平台资源比对，比对结果如下，且删除的资源已在MES平台中进行核实，结论为均为MES中不存在的资源
-
-![image-20260608123846442](https://img.tynote.cn/img/typora/20260608123853586.png#800w)
-
-②针对之前补充的CSP工艺BOM，在MES平台进行料号级工艺BOM补充和订单级工艺BOM生成
-
-③参数化工时修改
-
-APS配置为参数化工时：CTB-BZ，CTB包装工时60s，总数量超过1400件，工时不超过3天；HAS-WG，软管包装工时40S，总数量超过2000件，工时不超过3天；CTB-MW，CTB金属波纹管 包装工时60s，总数量超过1400件，工时不超过3天；——暂时填写在工艺BOM总表的【后设置】字段，待董老师确认后覆盖到【制造】字段
-
-OP|Hose-ZZ 资源量从6改为1，删除相应的生产日历  ——资源量已改为1，生产日历已删除
-
-④换型时间重新收集
-
-Hose04,05,06,07,08,09换型时间改为5min，PD|CTB-43-YB设为5m；——已改到前设置为5m，换型表对应的7条记录已删，待确认
-
-⑤资源分派有效条件更新及新增
-
-⑥修改PD|CTB-42-YB切管机外径、长度、数量参数和优先级；资源分派有效条件表达式细化到制造BOM的工序有效条件表达式上；
-
-——已迁移到制造BOM的工序有效条件表达式上；资源表的分派有效条件表达式暂未删除；待确认
-
-
-
-⑦CTB-WG，ERP内【折弯数】为0的时候，是没有30工序CTB-WG的
-
-a. 检查一下标准工艺BOM是弯管1-8，焊接1-8的工作单，对应型号表上的弯曲数量是否都有值。——均有值，无空值
-
-```mysql
-SELECT process_bom_category,bend_num FROM t_item where process_bom_category LIKE '%弯管%';
-SELECT b.code,b.bend_num FROM t_item b INNER JOIN t_manufacturing_order a ON b.code=a.item AND b.process_bom_category LIKE '%弯管%';
-SELECT DISTINCT b.bend_num FROM t_item b INNER JOIN t_manufacturing_order a where  b.code=a.item AND b.process_bom_category LIKE '%弯管%';
-SELECT b.code,b.bend_num FROM t_item b INNER JOIN t_manufacturing_order a ON b.code=a.item AND b.process_bom_category LIKE '%焊接%';
-SELECT DISTINCT b.bend_num FROM t_item b INNER JOIN t_manufacturing_order a where  b.code=a.item AND b.process_bom_category LIKE '%焊接%';
-```
-
-b. 工艺BOM上在工序CTB-WG设置工序有效条件表达式 ——已添加工序有效条件ME.Item.bend_num>0，待确认
-
-
-
